@@ -1,0 +1,81 @@
+project:
+  name: "DGD-TabPA"
+  seed: 42
+
+data:
+  dataset: "adult"
+  data_dir: "data/raw"
+  test_size: 0.2
+  datasets:
+    adult:
+      name: "Adult Income"
+      url: "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
+      target: "income"
+      task: "classification"
+    ilpd:
+      name: "Indian Liver Patient"
+      url: "https://archive.ics.uci.edu/ml/machine-learning-databases/00225/Indian%20Liver%20Patient%20Dataset%20(ILPD).csv"
+      target: "is_patient"
+      task: "classification"
+
+preprocessing:
+  numerical_transform: "quantile_normal"
+  categorical_encoding: "onehot"
+
+model:
+  d_model: 128
+  n_heads: 4
+  n_encoder_layers: 3
+  n_decoder_layers: 3
+  d_ff: 512
+  dropout: 0.1
+  activation: "gelu"
+
+diffusion:
+  num_timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  beta_schedule: "linear"
+  loss_type: "mse"
+  sampling_steps: 20
+
+training:
+  batch_size: 256
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  epochs: 100
+  device: "auto"
+  gradient_clip: 1.0
+  log_interval: 10
+
+distillation:
+  num_synthetic: 500
+  distill_lr: 0.01
+  distill_epochs: 200
+  inner_steps: 10
+  surrogate: "mlp"
+  matching: "distribution"
+
+privacy:
+  enabled: false
+  epsilon: 8.0
+  delta: 1e-5
+  max_grad_norm: 1.0
+  noise_multiplier: 1.1
+
+evaluation:
+  tstr_models:
+    - "xgboost"
+    - "catboost"
+    - "mlp"
+  metrics:
+    - "dcr"
+    - "f1_score"
+    - "wasserstein"
+    - "ks_test"
+    - "pcd"
+
+api:
+  host: "0.0.0.0"
+  port: 5000
+  debug: true
