@@ -43,7 +43,7 @@ training:
   batch_size: 256
   learning_rate: 0.0001
   weight_decay: 0.0001
-  epochs: 20
+  epochs: 10
   device: "auto"
   gradient_clip: 1.0
   log_interval: 10
@@ -51,7 +51,7 @@ training:
 distillation:
   num_synthetic: 500
   distill_lr: 0.01
-  distill_epochs: 200
+  distill_epochs: 10
   inner_steps: 10
   surrogate: "mlp"
   matching: "distribution"
