@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.preprocessing import TabularPreprocessor
 from src.models.transformer import TabularTransformerDenoiser
 from src.models.diffusion import GaussianDiffusion
+from src.privacy.dp_sgd import DPSGDWrapper
 
 
 def set_seed(seed: int):
@@ -129,6 +130,15 @@ def main():
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
+    # --- DP-SGD Privacy Guardrail ---
+    dp_wrapper = DPSGDWrapper.from_config(cfg)
+    diffusion, optimizer, train_loader = dp_wrapper.attach(
+        model=diffusion,
+        optimizer=optimizer,
+        data_loader=train_loader,
+        epochs=epochs,
+    )
+
     # --- Training Loop ---
     print(f"\nTraining for {epochs} epochs (mask_ratio={mask_ratio})...")
     best_loss = float("inf")
@@ -202,6 +212,16 @@ def main():
 
     print(f"\nTraining complete. Best loss: {best_loss:.6f}")
     print(f"Models saved to {save_dir}/")
+
+    # --- Privacy Report ---
+    privacy_report = dp_wrapper.get_privacy_report()
+    if privacy_report["enabled"]:
+        print(f"\n[DP-SGD] Privacy Report:")
+        print(f"  Final epsilon: {privacy_report['current_epsilon']:.4f}")
+        print(f"  Target epsilon: {privacy_report['target_epsilon']}")
+        print(f"  Budget remaining: {privacy_report['budget_remaining']:.4f}")
+    else:
+        print("\n[DP-SGD] Disabled — training ran without differential privacy.")
 
     # --- Quick Generation Test ---
     print("\nGenerating test samples...")

@@ -29,6 +29,7 @@ from src.models.transformer import TabularTransformerDenoiser
 from src.models.diffusion import GaussianDiffusion
 from src.distillation.loop import DistillationLoop
 from src.evaluation.evaluate import Evaluator
+from src.privacy.dp_sgd import DPSGDWrapper
 
 app = Flask(__name__)
 
@@ -156,6 +157,20 @@ def distill():
         optimizer = torch.optim.AdamW(diffusion.parameters(), lr=0.001)
 
         api_epochs = min(20, cfg["training"]["epochs"])
+
+        dp_wrapper = DPSGDWrapper(
+            enabled=dp_enabled,
+            target_epsilon=cfg["privacy"]["epsilon"],
+            target_delta=cfg["privacy"]["delta"],
+            max_grad_norm=cfg["privacy"]["max_grad_norm"],
+        )
+        diffusion, optimizer, train_loader = dp_wrapper.attach(
+            model=diffusion,
+            optimizer=optimizer,
+            data_loader=train_loader,
+            epochs=api_epochs,
+        )
+
         diffusion.train()
         for epoch in range(api_epochs):
             for X_b, y_b in train_loader:
@@ -206,6 +221,7 @@ def distill():
                 "features": info.num_features + info.cat_features,
                 "target": target_col,
             },
+            "privacy": dp_wrapper.get_privacy_report(),
             "evaluation": metrics,
             "synthetic_sample": syn_df.head(5).to_dict(orient="records"),
         }
