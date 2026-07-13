@@ -63,6 +63,9 @@ class DPSGDWrapper:
 
             if not ModuleValidator.is_valid(model):
                 model = ModuleValidator.fix(model)
+                optimizer = type(optimizer)(model.parameters(), **{
+                    k: v for k, v in optimizer.defaults.items()
+                })
 
             self.privacy_engine = PrivacyEngine()
 
