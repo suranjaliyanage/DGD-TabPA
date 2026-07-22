@@ -159,14 +159,29 @@ This runs core + smote + privacy + ablations. Prefer the stepped sequence above 
 
 | Notebook | Purpose |
 |----------|---------|
-| [`notebooks/full_experiments.ipynb`](notebooks/full_experiments.ipynb) | **Guided full experiment sequence** (recommended) |
+| [`notebooks/full_experiments.ipynb`](notebooks/full_experiments.ipynb) | Guided full experiment sequence (local) |
+| [`notebooks/colab_full_experiments.ipynb`](notebooks/colab_full_experiments.ipynb) | **Google Colab** full experiment sequence (GPU) |
 | [`notebooks/prototype_demo.ipynb`](notebooks/prototype_demo.ipynb) | Module / API demo & positive-negative test cases |
+
+### Local
 
 ```bash
 jupyter notebook notebooks/full_experiments.ipynb
 ```
 
-In the notebook:
+### Google Colab
+
+1. Open [Google Colab](https://colab.research.google.com/)  
+2. **File → Upload notebook** and select `notebooks/colab_full_experiments.ipynb`  
+   — or open from GitHub: `suranjaliyanage/DGD-TabPA` → `notebooks/colab_full_experiments.ipynb`  
+3. **Runtime → Change runtime type → GPU**  
+4. Set `EPOCHS` / `DISTILL_EPOCHS` (and `RUN_HEAVY` if needed) in the config cell  
+5. **Runtime → Run all**  
+6. Download `dgd_tabpa_outputs_*.zip` when the final cell finishes  
+
+If the GitHub repo is private, set `GITHUB_TOKEN` in the config cell, or upload the project to Drive and set `USE_DRIVE = True`.
+
+In the local notebook:
 
 1. Set `EPOCHS` / `DISTILL_EPOCHS`  
 2. Run Steps 1–4 for a complete single-dataset evidence pack  
