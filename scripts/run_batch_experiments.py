@@ -23,7 +23,9 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import List, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -88,9 +90,97 @@ UNSUPPORTED_ABLATIONS = {
 def run_one(cmd: list) -> int:
     print("\n" + "=" * 72)
     print(" ".join(cmd))
-    print("=" * 72)
+    print("=" * 72, flush=True)
     result = subprocess.run(cmd, cwd=str(ROOT))
     return result.returncode
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
+def print_suite_progress(
+    *,
+    index: int,
+    total: int,
+    current_label: str,
+    elapsed_times: Sequence[float],
+    suite_started: float,
+) -> None:
+    """Print current item, percent complete, and ETA for a batch suite."""
+    pct = 100.0 * (index - 1) / total if total else 0.0
+    done = index - 1
+    remaining = total - done
+    if elapsed_times:
+        avg = sum(elapsed_times) / len(elapsed_times)
+        eta = avg * remaining
+        avg_txt = _format_duration(avg)
+        eta_txt = _format_duration(eta)
+    else:
+        avg_txt = "n/a"
+        eta_txt = "estimating..."
+    elapsed_suite = time.perf_counter() - suite_started
+    bar_len = 20
+    filled = int(bar_len * (index - 1) / total) if total else 0
+    bar = "#" * filled + "-" * (bar_len - filled)
+    print("\n" + "-" * 72, flush=True)
+    print(
+        f"Progress [{bar}] {pct:5.1f}%  "
+        f"({done}/{total} finished, starting {index}/{total})",
+        flush=True,
+    )
+    print(f"Current:  {current_label}", flush=True)
+    print(
+        f"Elapsed:  {_format_duration(elapsed_suite)}  |  "
+        f"Avg/run: {avg_txt}  |  ETA remaining: {eta_txt}",
+        flush=True,
+    )
+    print("-" * 72, flush=True)
+
+
+def run_jobs_with_progress(
+    jobs: List[tuple],
+    record,
+) -> None:
+    """
+    Run (tag, cmd) jobs with live progress.
+
+    ``record`` is called as ``record(cmd, returncode, tag)``.
+    """
+    total = len(jobs)
+    if total == 0:
+        return
+    suite_started = time.perf_counter()
+    elapsed_times: List[float] = []
+    for i, (tag, cmd) in enumerate(jobs, start=1):
+        print_suite_progress(
+            index=i,
+            total=total,
+            current_label=tag,
+            elapsed_times=elapsed_times,
+            suite_started=suite_started,
+        )
+        t0 = time.perf_counter()
+        code = run_one(cmd)
+        dt = time.perf_counter() - t0
+        elapsed_times.append(dt)
+        record(cmd, code, tag)
+        print(
+            f"Finished {tag} in {_format_duration(dt)} "
+            f"[{i}/{total} = {100.0 * i / total:.1f}%]",
+            flush=True,
+        )
+        remaining = total - i
+        if remaining and elapsed_times:
+            eta = (sum(elapsed_times) / len(elapsed_times)) * remaining
+            print(f"ETA for remaining {remaining} run(s): {_format_duration(eta)}", flush=True)
 
 
 def main():
@@ -179,53 +269,106 @@ def main():
 
     try:
         if args.suite in ("all_ten", "core", "core_fast", "all"):
-            print(f"\nRunning DGD on {len(datasets)} datasets: {datasets}")
-            for ds in datasets:
-                cmd = base + ["--dataset", ds, "--method", "dgd_tabpa", "--run-id", f"{ds}_dgd"]
-                record(cmd, run_one(cmd), f"{ds}_dgd")
+            print(f"\nRunning DGD on {len(datasets)} datasets: {datasets}", flush=True)
+            jobs = [
+                (
+                    f"{ds}_dgd",
+                    base + ["--dataset", ds, "--method", "dgd_tabpa", "--run-id", f"{ds}_dgd"],
+                )
+                for ds in datasets
+            ]
+            run_jobs_with_progress(jobs, record)
 
         if args.suite in ("smote", "all"):
-            for ds in datasets:
-                cmd = base + ["--dataset", ds, "--method", "smote", "--run-id", f"{ds}_smote"]
-                record(cmd, run_one(cmd), f"{ds}_smote")
+            jobs = [
+                (
+                    f"{ds}_smote",
+                    base + ["--dataset", ds, "--method", "smote", "--run-id", f"{ds}_smote"],
+                )
+                for ds in datasets
+            ]
+            run_jobs_with_progress(jobs, record)
 
         if args.suite in ("privacy", "all"):
             ds = args.dataset
-            cmd = base + ["--dataset", ds, "--method", "dgd_tabpa", "--run-id", f"{ds}_noprivacy"]
-            record(cmd, run_one(cmd), f"{ds}_noprivacy")
+            jobs = [
+                (
+                    f"{ds}_noprivacy",
+                    base + ["--dataset", ds, "--method", "dgd_tabpa", "--run-id", f"{ds}_noprivacy"],
+                )
+            ]
             for eps in privacy_eps:
-                cmd = base + [
-                    "--dataset", ds, "--method", "dgd_tabpa",
-                    "--privacy", "--epsilon", str(eps),
-                    "--run-id", f"{ds}_eps{eps}",
-                ]
-                record(cmd, run_one(cmd), f"{ds}_eps{eps}")
+                jobs.append(
+                    (
+                        f"{ds}_eps{eps}",
+                        base
+                        + [
+                            "--dataset",
+                            ds,
+                            "--method",
+                            "dgd_tabpa",
+                            "--privacy",
+                            "--epsilon",
+                            str(eps),
+                            "--run-id",
+                            f"{ds}_eps{eps}",
+                        ],
+                    )
+                )
+            run_jobs_with_progress(jobs, record)
 
         if args.suite in ("ablations", "all"):
             ds = args.dataset
-            print("\nSupported ablations:", [a for a in ABLATIONS if a != "none"])
-            print("Unsupported / aliased ablations (not simulated):")
+            print("\nSupported ablations:", [a for a in ABLATIONS if a != "none"], flush=True)
+            print("Unsupported / aliased ablations (not simulated):", flush=True)
             for k, v in UNSUPPORTED_ABLATIONS.items():
-                print(f"  - {k}: {v}")
+                print(f"  - {k}: {v}", flush=True)
+            jobs = []
             for abl in ABLATIONS:
                 if abl == "none":
                     continue
-                cmd = base + [
-                    "--dataset", ds, "--method", "dgd_tabpa",
-                    "--ablation", abl, "--run-id", f"{ds}_{abl}",
-                ]
-                record(cmd, run_one(cmd), f"{ds}_{abl}")
+                jobs.append(
+                    (
+                        f"{ds}_{abl}",
+                        base
+                        + [
+                            "--dataset",
+                            ds,
+                            "--method",
+                            "dgd_tabpa",
+                            "--ablation",
+                            abl,
+                            "--run-id",
+                            f"{ds}_{abl}",
+                        ],
+                    )
+                )
+            run_jobs_with_progress(jobs, record)
 
         if args.suite == "seeds":
             ds = args.dataset
+            jobs = []
             for seed in seed_list:
                 for method in ("dgd_tabpa", "smote"):
                     tag = f"{ds}_{method}_seed{seed}"
-                    cmd = base + [
-                        "--dataset", ds, "--method", method,
-                        "--seed", str(seed), "--run-id", tag, "--force",
-                    ]
-                    record(cmd, run_one(cmd), tag)
+                    jobs.append(
+                        (
+                            tag,
+                            base
+                            + [
+                                "--dataset",
+                                ds,
+                                "--method",
+                                method,
+                                "--seed",
+                                str(seed),
+                                "--run-id",
+                                tag,
+                                "--force",
+                            ],
+                        )
+                    )
+            run_jobs_with_progress(jobs, record)
 
     except SystemExit:
         pass
