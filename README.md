@@ -70,16 +70,22 @@ python scripts/run_experiment.py ^
 
 ### Step 3 — Multi-dataset core quantitative table
 
+**All 10 benchmarks** (8 classification + 2 regression):
+
+```bash
+python scripts/run_batch_experiments.py --suite all_ten --epochs 50 --distill-epochs 50
+```
+
+Classification only (8 datasets, includes covertype subsampled to 50k):
+
+```bash
+python scripts/run_batch_experiments.py --suite core --epochs 50
+```
+
 Fast subset (diabetes, ilpd, churn, adult):
 
 ```bash
 python scripts/run_batch_experiments.py --suite core_fast --epochs 50
-```
-
-Full classification suite:
-
-```bash
-python scripts/run_batch_experiments.py --suite core --epochs 50
 ```
 
 ### Step 4 — SMOTE across datasets
@@ -243,12 +249,14 @@ python -m src.api.app
 | `ilpd` | Indian Liver Patient | Classification | `is_patient` |
 | `diabetes` | Pima Indians Diabetes | Classification | `Outcome` |
 
-### 3. Regression (data available; the TSTR experiment runner is classification-oriented)
+### 3. Regression (supported via quantile-binned conditioning + R2/MAE TSTR)
 
 | Key | Dataset | Target |
 |-----|---------|--------|
 | `california_housing` | California Housing | `MedHouseVal` |
 | `king_county` | King County House Sales | `price` |
+
+> `covertype` is automatically subsampled to 50,000 rows (configurable in `config/default.yaml`) for tractable training.
 
 ---
 

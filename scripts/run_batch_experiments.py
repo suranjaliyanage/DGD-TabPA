@@ -2,7 +2,10 @@
 Batch runner for multi-dataset / ablation / privacy sweeps.
 
 Examples:
-    # Core quantitative table across classification datasets
+    # All 10 benchmark datasets
+    python scripts/run_batch_experiments.py --suite all_ten --epochs 30
+
+    # Classification-only core table
     python scripts/run_batch_experiments.py --suite core --epochs 20
 
     # Privacy–utility sweep on one dataset
@@ -24,14 +27,34 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-CLASSIFICATION_DATASETS = [
+# All 10 benchmarks from config/default.yaml
+ALL_TEN_DATASETS = [
     "adult",
     "churn",
     "credit",
+    "covertype",
     "cvd",
     "hcv",
     "ilpd",
     "diabetes",
+    "california_housing",
+    "king_county",
+]
+
+CLASSIFICATION_DATASETS = [
+    "adult",
+    "churn",
+    "credit",
+    "covertype",
+    "cvd",
+    "hcv",
+    "ilpd",
+    "diabetes",
+]
+
+REGRESSION_DATASETS = [
+    "california_housing",
+    "king_county",
 ]
 
 # Smaller / faster set for quick evaluation iterations
@@ -57,32 +80,53 @@ def main():
         "--suite",
         type=str,
         required=True,
-        choices=["core", "core_fast", "privacy", "ablations", "smote", "all"],
+        choices=[
+            "all_ten",
+            "core",
+            "core_fast",
+            "privacy",
+            "ablations",
+            "smote",
+            "all",
+        ],
+        help="all_ten = train/eval on all 10 datasets; core = 8 classification; "
+        "all = all_ten DGD + smote + privacy + ablations",
     )
     parser.add_argument("--dataset", type=str, default="diabetes")
     parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--distill-epochs", type=int, default=None)
     parser.add_argument("--datasets", type=str, nargs="*", default=None)
     args = parser.parse_args()
 
     py = sys.executable
     script = str(ROOT / "scripts" / "run_experiment.py")
     base = [py, script, "--config", args.config, "--epochs", str(args.epochs)]
+    if args.distill_epochs is not None:
+        base += ["--distill-epochs", str(args.distill_epochs)]
 
     datasets = args.datasets
     if datasets is None:
-        if args.suite in ("core", "all"):
+        if args.suite in ("all_ten", "all"):
+            datasets = ALL_TEN_DATASETS
+        elif args.suite == "core":
             datasets = CLASSIFICATION_DATASETS
         elif args.suite == "core_fast":
             datasets = CORE_FAST
+        elif args.suite == "smote":
+            datasets = ALL_TEN_DATASETS
         else:
             datasets = [args.dataset]
 
     codes = []
 
-    if args.suite in ("core", "core_fast", "all"):
+    if args.suite in ("all_ten", "core", "core_fast", "all"):
+        print(f"\nRunning DGD on {len(datasets)} datasets: {datasets}")
         for ds in datasets:
             codes.append(
-                run_one(base + ["--dataset", ds, "--method", "dgd_tabpa", "--run-id", f"{ds}_dgd"])
+                run_one(
+                    base
+                    + ["--dataset", ds, "--method", "dgd_tabpa", "--run-id", f"{ds}_dgd"]
+                )
             )
 
     if args.suite in ("smote", "all"):
@@ -103,7 +147,6 @@ def main():
 
     if args.suite in ("privacy", "all"):
         ds = args.dataset
-        # Non-private baseline
         codes.append(
             run_one(
                 base
@@ -139,7 +182,7 @@ def main():
         ds = args.dataset
         for abl in ABLATIONS:
             if abl == "none":
-                continue  # covered by core
+                continue
             codes.append(
                 run_one(
                     base
@@ -161,15 +204,12 @@ def main():
     if failed:
         sys.exit(1)
 
-    # After privacy suite, try to build the trade-off plot from master CSV
     if args.suite in ("privacy", "all"):
         _try_privacy_plot(args.dataset)
 
 
 def _try_privacy_plot(dataset: str):
     try:
-        import json
-
         import pandas as pd
 
         from src.evaluation.plotting import plot_privacy_utility
@@ -185,10 +225,12 @@ def _try_privacy_plot(dataset: str):
             eps = row.get("epsilon")
             if pd.isna(eps):
                 if "noprivacy" in method or method == "dgd_tabpa":
-                    eps = 1e6  # sentinel for "no DP"
+                    eps = 1e6
                 else:
                     continue
             f1 = row.get("mean_tstr_f1")
+            if pd.isna(f1):
+                f1 = row.get("mean_tstr_r2")
             dcr = row.get("dcr_median")
             if pd.isna(f1):
                 continue
@@ -197,7 +239,7 @@ def _try_privacy_plot(dataset: str):
                     "epsilon": float(eps) if float(eps) < 1e5 else 1000.0,
                     "tstr_f1": float(f1),
                     "dcr_median": float(dcr) if not pd.isna(dcr) else None,
-                    "label": "no-DP" if float(eps) >= 1e5 else f"ε={eps}",
+                    "label": "no-DP" if float(eps) >= 1e5 else f"eps={eps}",
                 }
             )
         if points:
@@ -210,9 +252,9 @@ def _try_privacy_plot(dataset: str):
             plot_privacy_utility(
                 points,
                 out,
-                title=f"Privacy–Utility Trade-off ({dataset})",
+                title=f"Privacy-Utility Trade-off ({dataset})",
             )
-            print(f"Privacy–utility figure: {out}")
+            print(f"Privacy-utility figure: {out}")
     except Exception as e:
         print(f"[warn] Could not build privacy plot: {e}")
 

@@ -296,6 +296,7 @@ def evaluate_and_plot(
     distill_loss=None,
     privacy_report=None,
     extra_meta=None,
+    task: str = "classification",
 ):
     # Ensure target column present with original label values
     syn_eval = syn_df.copy()
@@ -324,12 +325,24 @@ def evaluate_and_plot(
     from sklearn.preprocessing import LabelEncoder
 
     le = LabelEncoder()
-    y_all = list(np.asarray(y_train).astype(str)) + list(
-        np.asarray(syn_labels).astype(str)
-    )
-    le.fit(y_all)
-    real_y_enc = le.transform(np.asarray(y_train).astype(str))
-    syn_y_enc = le.transform(np.asarray(syn_labels).astype(str))
+    if task == "regression":
+        # Bin continuous targets for colouring only
+        from sklearn.preprocessing import KBinsDiscretizer
+
+        binner = KBinsDiscretizer(n_bins=10, encode="ordinal", strategy="quantile")
+        y_stack = np.concatenate(
+            [np.asarray(y_train, dtype=float), np.asarray(syn_labels, dtype=float)]
+        ).reshape(-1, 1)
+        y_bins = binner.fit_transform(y_stack).astype(int).ravel()
+        real_y_enc = y_bins[: len(y_train)]
+        syn_y_enc = y_bins[len(y_train) :]
+    else:
+        y_all = list(np.asarray(y_train).astype(str)) + list(
+            np.asarray(syn_labels).astype(str)
+        )
+        le.fit(y_all)
+        real_y_enc = le.transform(np.asarray(y_train).astype(str))
+        syn_y_enc = le.transform(np.asarray(syn_labels).astype(str))
 
     evaluator = Evaluator(random_state=cfg["project"]["seed"])
     results = evaluator.evaluate_all(
@@ -341,6 +354,7 @@ def evaluate_and_plot(
         real_test_labels=np.asarray(y_test),
         synthetic_labels=np.asarray(syn_labels),
         cat_cols=preprocessor.info.cat_features,
+        task=task,
     )
     evaluator.print_report()
 
@@ -447,6 +461,12 @@ def main():
         help="Output directory (default: outputs/experiments/<run_id>)",
     )
     parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Subsample large datasets (default from config; covertype uses 50000)",
+    )
+    parser.add_argument(
         "--run-id",
         type=str,
         default=None,
@@ -473,12 +493,7 @@ def main():
     device = get_device(cfg["training"]["device"])
 
     dataset_cfg = cfg["data"]["datasets"][dataset_name]
-    if dataset_cfg.get("task") == "regression":
-        print(
-            f"ERROR: '{dataset_name}' is regression. "
-            "The TSTR evaluation pipeline currently supports classification datasets."
-        )
-        sys.exit(1)
+    task = dataset_cfg.get("task", "classification")
 
     data_path = Path(cfg["data"]["data_dir"]) / f"{dataset_name}.csv"
     if not data_path.exists():
@@ -487,6 +502,13 @@ def main():
             f"Run: python scripts/download_data.py --dataset {dataset_name}"
         )
         sys.exit(1)
+
+    # Default subsample for very large sets (covertype ~580k rows)
+    max_samples = args.max_samples
+    if max_samples is None:
+        max_samples = cfg.get("data", {}).get("max_samples", {}).get(dataset_name)
+    if max_samples is None and dataset_name == "covertype":
+        max_samples = 50000
 
     run_tag = args.run_id or (
         f"{dataset_name}_{args.method}"
@@ -498,6 +520,7 @@ def main():
 
     print(f"Device: {device}")
     print(f"Run: {run_tag}")
+    print(f"Task: {task}")
     print(f"Output: {out_dir}")
 
     numerical_transform = (
@@ -508,12 +531,14 @@ def main():
     preprocessor = TabularPreprocessor(
         random_state=cfg["project"]["seed"],
         numerical_transform=numerical_transform,
+        task=task,
     )
     X_train, X_test, y_train, y_test = preprocessor.load_dataset(
         name=dataset_name,
         filepath=str(data_path),
         target_col=dataset_cfg["target"],
         test_size=cfg["data"]["test_size"],
+        max_samples=max_samples,
     )
     X_train_t, y_train_t = preprocessor.fit_transform(X_train, y_train)
     X_test_t, y_test_t = preprocessor.transform(X_test, y_test)
@@ -521,8 +546,9 @@ def main():
     target_col = info.target_col
 
     print(f"\nDataset: {info.name}")
+    print(f"  Task: {task}")
     print(f"  Features: num={len(info.num_features)} cat={len(info.cat_features)}")
-    print(f"  Dim={info.total_dim}, Classes={info.num_classes}")
+    print(f"  Dim={info.total_dim}, Cond. classes/bins={info.num_classes}")
     print(f"  Train={len(X_train_t)}, Test={len(X_test_t)}")
     print(f"  Numerical transform: {numerical_transform}")
 
@@ -534,7 +560,7 @@ def main():
     privacy_report = {"enabled": False}
     method_name = args.method if ablation == "none" else f"{args.method}_{ablation}"
 
-    # ── SMOTE baseline (no diffusion training) ──
+    # ── SMOTE / regression noise baseline (no diffusion training) ──
     if args.method == "smote":
         syn_df = generate_smote_synthetic(
             X_train,
@@ -542,6 +568,7 @@ def main():
             target_col=target_col,
             n_synthetic=cfg["distillation"]["num_synthetic"],
             random_state=cfg["project"]["seed"],
+            task=task,
         )
         syn_labels = syn_df[target_col].values
         evaluate_and_plot(
@@ -558,7 +585,8 @@ def main():
             target_col,
             out_dir,
             privacy_report=privacy_report,
-            extra_meta={"ablation": ablation},
+            extra_meta={"ablation": ablation, "task": task},
+            task=task,
         )
         return
 
@@ -674,7 +702,9 @@ def main():
             "privacy_enabled": privacy_enabled,
             "epsilon_target": epsilon if privacy_enabled else None,
             "numerical_transform": numerical_transform,
+            "task": task,
         },
+        task=task,
     )
 
 

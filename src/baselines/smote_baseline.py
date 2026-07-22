@@ -17,12 +17,19 @@ def generate_smote_synthetic(
     target_col: str,
     n_synthetic: int = 500,
     random_state: int = 42,
+    task: str = "classification",
 ) -> pd.DataFrame:
     """
-    Produce a synthetic DataFrame of size n_synthetic using SMOTE when available,
-    otherwise a nearest-neighbour interpolation fallback.
+    Produce a synthetic DataFrame of size n_synthetic.
+    Classification: SMOTE (or NN interpolation fallback).
+    Regression: bootstrap + Gaussian noise on numeric features.
     """
     y_train = np.asarray(y_train)
+    if task == "regression":
+        return _regression_noise_baseline(
+            X_train, y_train, target_col, n_synthetic, random_state
+        )
+
     num_cols = X_train.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = [c for c in X_train.columns if c not in num_cols]
 
@@ -73,6 +80,26 @@ def generate_smote_synthetic(
 
     syn[target_col] = y_res
     # Preserve column order: features then target
+    ordered = [c for c in X_train.columns if c in syn.columns] + [target_col]
+    return syn[ordered]
+
+
+def _regression_noise_baseline(
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    target_col: str,
+    n_synthetic: int,
+    random_state: int,
+) -> pd.DataFrame:
+    """Bootstrap real rows and add small Gaussian noise to numeric features."""
+    rng = np.random.RandomState(random_state)
+    idx = rng.choice(len(X_train), n_synthetic, replace=True)
+    syn = X_train.iloc[idx].reset_index(drop=True).copy()
+    num_cols = syn.select_dtypes(include=[np.number]).columns.tolist()
+    for col in num_cols:
+        std = float(X_train[col].std() or 1.0)
+        syn[col] = syn[col].astype(float) + rng.normal(0, 0.05 * std, size=len(syn))
+    syn[target_col] = np.asarray(y_train, dtype=float)[idx]
     ordered = [c for c in X_train.columns if c in syn.columns] + [target_col]
     return syn[ordered]
 

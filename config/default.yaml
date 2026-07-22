@@ -6,6 +6,9 @@ data:
   dataset: "adult"
   data_dir: "data/raw"
   test_size: 0.2
+  # Subsample oversized datasets for tractable training (None = use full CSV)
+  max_samples:
+    covertype: 50000
   datasets:
     # --- 1. Generic Industrial Benchmarks ---
     adult:
@@ -129,15 +132,18 @@ evaluation:
   output_dir: "outputs/experiments"
 
 experiments:
-  # Datasets used for quantitative evaluation tables
+  # All 10 benchmark datasets
   evaluation_datasets:
     - "adult"
     - "churn"
     - "credit"
+    - "covertype"
     - "cvd"
     - "hcv"
     - "ilpd"
     - "diabetes"
+    - "california_housing"
+    - "king_county"
   privacy_epsilon_grid:
     - 1.0
     - 4.0

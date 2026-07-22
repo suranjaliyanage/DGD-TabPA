@@ -22,10 +22,13 @@ from scipy.stats import ks_2samp, wasserstein_distance
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
     roc_auc_score,
     roc_curve,
 )
-from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPClassifier, MLPRegressor
 
 
 class Evaluator:
@@ -51,6 +54,7 @@ class Evaluator:
         real_test_labels: np.ndarray = None,
         synthetic_labels: np.ndarray = None,
         cat_cols: list = None,
+        task: str = "classification",
     ) -> dict:
         """
         Run the complete evaluation pipeline.
@@ -59,6 +63,7 @@ class Evaluator:
             dict with resemblance, utility, and privacy metrics
         """
         self.results = {
+            "task": task,
             "resemblance": self._evaluate_resemblance(
                 real_train, synthetic, cat_cols=cat_cols
             ),
@@ -70,6 +75,7 @@ class Evaluator:
                 real_train_labels,
                 real_test_labels,
                 synthetic_labels,
+                task=task,
             ),
             "privacy": self._evaluate_privacy(
                 real_train,
@@ -184,11 +190,22 @@ class Evaluator:
         real_train_labels: np.ndarray = None,
         real_test_labels: np.ndarray = None,
         synthetic_labels: np.ndarray = None,
+        task: str = "classification",
     ) -> dict:
         """
-        TSTR (Train on Synthetic, Test on Real) evaluation.
-        Also computes TRTR (Train on Real, Test on Real) as baseline.
+        TSTR evaluation for classification (F1/AUC) or regression (R2/MAE/RMSE).
         """
+        if task == "regression":
+            return self._evaluate_utility_regression(
+                real_train,
+                real_test,
+                synthetic,
+                target_col,
+                real_train_labels,
+                real_test_labels,
+                synthetic_labels,
+            )
+
         results = {}
         self._roc_curves = {}
 
@@ -345,6 +362,120 @@ class Evaluator:
             "n_test": int(len(X_real_test)),
             "n_synthetic": int(len(X_syn)),
             "n_classes": int(n_classes),
+            "task": "classification",
+        }
+        return results
+
+    def _evaluate_utility_regression(
+        self,
+        real_train: pd.DataFrame,
+        real_test: pd.DataFrame,
+        synthetic: pd.DataFrame,
+        target_col: str,
+        real_train_labels: np.ndarray = None,
+        real_test_labels: np.ndarray = None,
+        synthetic_labels: np.ndarray = None,
+    ) -> dict:
+        """TSTR regression utility: R2, MAE, RMSE."""
+        results = {}
+        self._roc_curves = {}
+
+        feature_cols = [c for c in synthetic.columns if c != target_col]
+        common_features = [
+            c
+            for c in feature_cols
+            if c in real_train.columns and c in real_test.columns
+        ]
+        if not common_features:
+            return {"error": "No common feature columns found"}
+
+        X_real_train = (
+            real_train[common_features].select_dtypes(include=[np.number]).values
+        )
+        X_real_test = (
+            real_test[common_features].select_dtypes(include=[np.number]).values
+        )
+        X_syn = synthetic[common_features].select_dtypes(include=[np.number]).values
+
+        y_real_train = (
+            np.asarray(real_train_labels, dtype=float)
+            if real_train_labels is not None
+            else real_train[target_col].astype(float).values
+        )
+        y_real_test = (
+            np.asarray(real_test_labels, dtype=float)
+            if real_test_labels is not None
+            else real_test[target_col].astype(float).values
+        )
+        y_syn = (
+            np.asarray(synthetic_labels, dtype=float)
+            if synthetic_labels is not None
+            else synthetic[target_col].astype(float).values
+        )
+
+        mask_train = ~np.isnan(X_real_train).any(axis=1) & ~np.isnan(y_real_train)
+        mask_test = ~np.isnan(X_real_test).any(axis=1) & ~np.isnan(y_real_test)
+        mask_syn = ~np.isnan(X_syn).any(axis=1) & ~np.isnan(y_syn)
+        X_real_train, y_real_train = X_real_train[mask_train], y_real_train[mask_train]
+        X_real_test, y_real_test = X_real_test[mask_test], y_real_test[mask_test]
+        X_syn, y_syn = X_syn[mask_syn], y_syn[mask_syn]
+
+        models = {}
+        try:
+            from xgboost import XGBRegressor
+
+            models["xgboost"] = XGBRegressor(
+                n_estimators=100, max_depth=6, random_state=self.random_state
+            )
+        except ImportError:
+            pass
+        try:
+            from catboost import CatBoostRegressor
+
+            models["catboost"] = CatBoostRegressor(
+                iterations=100, depth=6, random_seed=self.random_state, verbose=0
+            )
+        except ImportError:
+            pass
+        models["mlp"] = MLPRegressor(
+            hidden_layer_sizes=(128, 64),
+            max_iter=300,
+            random_state=self.random_state,
+        )
+
+        for name, model in models.items():
+            try:
+                m_trtr = _clone_model(model)
+                m_trtr.fit(X_real_train, y_real_train)
+                pred_trtr = m_trtr.predict(X_real_test)
+
+                m_tstr = _clone_model(model)
+                m_tstr.fit(X_syn, y_syn)
+                pred_tstr = m_tstr.predict(X_real_test)
+
+                trtr_r2 = float(r2_score(y_real_test, pred_trtr))
+                tstr_r2 = float(r2_score(y_real_test, pred_tstr))
+                results[name] = {
+                    "trtr_r2": trtr_r2,
+                    "tstr_r2": tstr_r2,
+                    "r2_gap": round(trtr_r2 - tstr_r2, 4),
+                    "trtr_mae": float(mean_absolute_error(y_real_test, pred_trtr)),
+                    "tstr_mae": float(mean_absolute_error(y_real_test, pred_tstr)),
+                    "trtr_rmse": float(
+                        mean_squared_error(y_real_test, pred_trtr) ** 0.5
+                    ),
+                    "tstr_rmse": float(
+                        mean_squared_error(y_real_test, pred_tstr) ** 0.5
+                    ),
+                }
+            except Exception as e:
+                results[name] = {"error": str(e)}
+
+        results["_meta"] = {
+            "n_train": int(len(X_real_train)),
+            "n_test": int(len(X_real_test)),
+            "n_synthetic": int(len(X_syn)),
+            "task": "regression",
         }
         return results
 
@@ -395,14 +526,12 @@ class Evaluator:
             results["privacy_rating"] = "Poor"
 
         # Distance-based MIA: members (train) vs non-members (test)
-        # Score = negative distance to nearest synthetic record (higher => more "member-like")
         test_common = [c for c in common_num if c in real_test.columns]
         if test_common and len(real_test) > 0:
             member = real_train[test_common].dropna().values.astype(float)
             non_member = real_test[test_common].dropna().values.astype(float)
             syn_m = synthetic[test_common].dropna().values.astype(float)
             if len(member) and len(non_member) and len(syn_m):
-                # subsample for speed on large sets
                 rng = np.random.RandomState(self.random_state)
                 max_n = 2000
                 if len(member) > max_n:
@@ -422,7 +551,6 @@ class Evaluator:
                     mia_auc = float(roc_auc_score(labels_mia, scores))
                 except ValueError:
                     mia_auc = None
-                # Attack success ≈ how far from random (0.5)
                 results["mia_auc"] = mia_auc
                 results["mia_member_mean_dist"] = float(np.mean(d_mem))
                 results["mia_nonmember_mean_dist"] = float(np.mean(d_non))
@@ -444,6 +572,7 @@ class Evaluator:
         row = {
             "dataset": dataset,
             "method": method,
+            "task": self.results.get("task", util.get("_meta", {}).get("task", "classification")),
             "wasserstein_mean": res.get("wasserstein_mean"),
             "pcd": res.get("pcd"),
             "jsd_mean": res.get("jsd_mean"),
@@ -454,11 +583,13 @@ class Evaluator:
             "privacy_rating": priv.get("privacy_rating"),
         }
 
-        f1s, gaps, aucs = [], [], []
+        f1s, gaps, aucs, r2s, r2_gaps = [], [], [], [], []
         for model_name, metrics in util.items():
             if model_name.startswith("_"):
                 continue
-            if isinstance(metrics, dict) and "tstr_f1" in metrics:
+            if not isinstance(metrics, dict):
+                continue
+            if "tstr_f1" in metrics:
                 row[f"{model_name}_trtr_f1"] = metrics["trtr_f1"]
                 row[f"{model_name}_tstr_f1"] = metrics["tstr_f1"]
                 row[f"{model_name}_f1_gap"] = metrics["f1_gap"]
@@ -467,10 +598,19 @@ class Evaluator:
                 gaps.append(metrics["f1_gap"])
                 if metrics.get("tstr_auc") is not None:
                     aucs.append(metrics["tstr_auc"])
+            if "tstr_r2" in metrics:
+                row[f"{model_name}_trtr_r2"] = metrics["trtr_r2"]
+                row[f"{model_name}_tstr_r2"] = metrics["tstr_r2"]
+                row[f"{model_name}_r2_gap"] = metrics["r2_gap"]
+                row[f"{model_name}_tstr_mae"] = metrics.get("tstr_mae")
+                r2s.append(metrics["tstr_r2"])
+                r2_gaps.append(metrics["r2_gap"])
 
         row["mean_tstr_f1"] = float(np.mean(f1s)) if f1s else None
         row["mean_f1_gap"] = float(np.mean(gaps)) if gaps else None
         row["mean_tstr_auc"] = float(np.mean(aucs)) if aucs else None
+        row["mean_tstr_r2"] = float(np.mean(r2s)) if r2s else None
+        row["mean_r2_gap"] = float(np.mean(r2_gaps)) if r2_gaps else None
         return row
 
     def save_results(self, path: str | Path, extra: dict = None) -> Path:
@@ -543,13 +683,21 @@ class Evaluator:
         for model_name, metrics in util.items():
             if model_name.startswith("_"):
                 continue
-            if isinstance(metrics, dict) and "tstr_f1" in metrics:
+            if not isinstance(metrics, dict):
+                continue
+            if "tstr_f1" in metrics:
                 print(f"  [{model_name}]")
                 print(f"    TRTR F1:  {metrics['trtr_f1']:.4f} (baseline)")
                 print(f"    TSTR F1:  {metrics['tstr_f1']:.4f}")
                 print(f"    F1 Gap:   {metrics['f1_gap']:.4f}")
                 if metrics.get("tstr_auc") is not None:
                     print(f"    TSTR AUC: {metrics['tstr_auc']:.4f}")
+            elif "tstr_r2" in metrics:
+                print(f"  [{model_name}]")
+                print(f"    TRTR R2:  {metrics['trtr_r2']:.4f} (baseline)")
+                print(f"    TSTR R2:  {metrics['tstr_r2']:.4f}")
+                print(f"    R2 Gap:   {metrics['r2_gap']:.4f}")
+                print(f"    TSTR MAE: {metrics['tstr_mae']:.4f}")
 
         priv = self.results.get("privacy", {})
         print("\n--- PRIVACY (DCR + MIA) ---")
