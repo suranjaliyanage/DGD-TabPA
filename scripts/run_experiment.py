@@ -41,10 +41,18 @@ from src.privacy.dp_sgd import DPSGDWrapper
 
 
 def set_seed(seed: int):
+    import random
+
+    random.seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    try:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except Exception:
+        pass
 
 
 def get_device(config_device: str) -> torch.device:
@@ -297,7 +305,15 @@ def evaluate_and_plot(
     privacy_report=None,
     extra_meta=None,
     task: str = "classification",
+    run_id: str = None,
+    runtime_info: dict = None,
+    mmd_final: float = None,
 ):
+    from src.evaluation.plotting import plot_class_distribution, plot_pr_curves
+    from src.evaluation.reporting import append_result_row
+    from src.evaluation.result_builder import build_extended_summary
+    from src.evaluation.runtime import environment_metadata
+
     # Ensure target column present with original label values
     syn_eval = syn_df.copy()
     if target_col not in syn_eval.columns:
@@ -308,7 +324,6 @@ def evaluate_and_plot(
     real_test = X_test.copy()
     real_test[target_col] = y_test
 
-    # Numeric matrices for manifold plot (shared columns)
     num_cols = [
         c
         for c in preprocessor.info.num_features
@@ -321,12 +336,10 @@ def evaluate_and_plot(
         syn_eval[num_cols].fillna(0).values.astype(float) if num_cols else None
     )
 
-    # Encode labels for manifold colouring
     from sklearn.preprocessing import LabelEncoder
 
     le = LabelEncoder()
     if task == "regression":
-        # Bin continuous targets for colouring only
         from sklearn.preprocessing import KBinsDiscretizer
 
         binner = KBinsDiscretizer(n_bins=10, encode="ordinal", strategy="quantile")
@@ -361,29 +374,53 @@ def evaluate_and_plot(
     meta = {
         "dataset": dataset_name,
         "method": method,
+        "run_id": run_id or out_dir.name,
         "privacy": privacy_report or {},
         **(extra_meta or {}),
     }
     metrics_path = out_dir / "metrics.json"
     evaluator.save_results(metrics_path, extra=meta)
 
-    summary = evaluator.summary_row(dataset_name, method=method)
-    if privacy_report and privacy_report.get("enabled"):
-        summary["epsilon"] = privacy_report.get("current_epsilon")
-        summary["target_epsilon"] = privacy_report.get("target_epsilon")
-    summary_path = out_dir / "summary_row.json"
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+    base_summary = evaluator.summary_row(dataset_name, method=method)
+    summary = build_extended_summary(
+        run_id=run_id or out_dir.name,
+        dataset=dataset_name,
+        method=method,
+        task_type=task,
+        evaluator_summary=base_summary,
+        evaluator_results=results,
+        random_seed=int(cfg["project"]["seed"]),
+        target_column=target_col,
+        n_train=len(X_train),
+        n_test=len(X_test),
+        n_real=len(X_train),
+        n_synthetic=len(syn_eval),
+        ablation=(extra_meta or {}).get("ablation", "none"),
+        status="success",
+        runtime=runtime_info,
+        privacy_report=privacy_report if (privacy_report or {}).get("enabled") else None,
+        mmd_final=mmd_final,
+        env_meta=environment_metadata(),
+    )
 
-    # Append to master CSV
+    summary_path = out_dir / "summary_row.json"
+    tmp = summary_path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, default=str)
+    tmp.replace(summary_path)
+
     master_csv = out_dir.parent / "results_master.csv"
-    fieldnames = list(summary.keys())
-    write_header = not master_csv.exists()
-    with open(master_csv, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        if write_header:
-            writer.writeheader()
-        writer.writerow(summary)
+    append_result_row(summary, master_csv)
+
+    # status.json for resumability
+    status = {
+        "run_id": summary["run_id"],
+        "status": "success",
+        "summary_path": str(summary_path),
+        "metrics_path": str(metrics_path),
+    }
+    with open(out_dir / "status.json", "w", encoding="utf-8") as f:
+        json.dump(status, f, indent=2)
 
     priv = results.get("privacy", {})
     fig_paths = generate_all_figures(
@@ -402,6 +439,12 @@ def evaluate_and_plot(
         syn_y=syn_y_enc,
         real_X_num=real_X_num,
         syn_X_num=syn_X_num,
+        method=method,
+        pr_curves=evaluator.get_pr_curves(),
+        confusion_data=evaluator.get_confusion_data(),
+        residual_data=evaluator.get_residual_data(),
+        exact_copy_count=priv.get("exact_copy_count"),
+        task=task,
     )
 
     with open(out_dir / "figure_paths.json", "w", encoding="utf-8") as f:
@@ -466,6 +509,12 @@ def main():
         default=None,
         help="Subsample large datasets (default from config; covertype uses 50000)",
     )
+    parser.add_argument("--seed", type=int, default=None, help="Override config seed")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run even if summary_row.json / status.json already exist",
+    )
     parser.add_argument(
         "--run-id",
         type=str,
@@ -488,6 +537,9 @@ def main():
     )
     privacy_enabled = args.privacy or cfg.get("privacy", {}).get("enabled", False)
     ablation = args.ablation
+
+    if args.seed is not None:
+        cfg["project"]["seed"] = args.seed
 
     set_seed(cfg["project"]["seed"])
     device = get_device(cfg["training"]["device"])
@@ -514,15 +566,84 @@ def main():
         f"{dataset_name}_{args.method}"
         + (f"_{ablation}" if ablation != "none" else "")
         + (f"_eps{epsilon}" if privacy_enabled else "")
+        + (f"_seed{cfg['project']['seed']}" if args.seed is not None else "")
     )
     out_dir = Path(args.save_dir) if args.save_dir else Path("outputs") / "experiments" / run_tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resume / skip completed runs
+    status_path = out_dir / "status.json"
+    summary_path = out_dir / "summary_row.json"
+    if not args.force and status_path.exists() and summary_path.exists():
+        try:
+            st = json.loads(status_path.read_text(encoding="utf-8"))
+            if st.get("status") == "success":
+                print(f"Skipping completed run {run_tag} (use --force to re-run)")
+                print(f"  Existing summary: {summary_path}")
+                return
+        except Exception:
+            pass
+
+    # Freeze effective config
+    with open(out_dir / "config_snapshot.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f)
+
     print(f"Device: {device}")
     print(f"Run: {run_tag}")
     print(f"Task: {task}")
+    print(f"Seed: {cfg['project']['seed']}")
     print(f"Output: {out_dir}")
 
+    try:
+        _run_pipeline(
+            cfg=cfg,
+            args=args,
+            dataset_name=dataset_name,
+            dataset_cfg=dataset_cfg,
+            task=task,
+            data_path=data_path,
+            max_samples=max_samples,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=lr,
+            epsilon=epsilon,
+            privacy_enabled=privacy_enabled,
+            ablation=ablation,
+            device=device,
+            out_dir=out_dir,
+            run_tag=run_tag,
+        )
+    except Exception as e:
+        err = {
+            "run_id": run_tag,
+            "status": "failed",
+            "error": str(e),
+        }
+        with open(out_dir / "status.json", "w", encoding="utf-8") as f:
+            json.dump(err, f, indent=2)
+        print(f"FAILED run {run_tag}: {e}")
+        raise
+
+
+def _run_pipeline(
+    *,
+    cfg,
+    args,
+    dataset_name,
+    dataset_cfg,
+    task,
+    data_path,
+    max_samples,
+    epochs,
+    batch_size,
+    lr,
+    epsilon,
+    privacy_enabled,
+    ablation,
+    device,
+    out_dir,
+    run_tag,
+):
     numerical_transform = (
         "minmax"
         if ablation == "minmax"
@@ -552,6 +673,10 @@ def main():
     print(f"  Train={len(X_train_t)}, Test={len(X_test_t)}")
     print(f"  Numerical transform: {numerical_transform}")
 
+    from src.evaluation.runtime import RuntimeTracker, count_parameters
+
+    tracker = RuntimeTracker()
+
     with open(out_dir / f"preprocessor_{dataset_name}.pkl", "wb") as f:
         pickle.dump(preprocessor, f)
 
@@ -559,35 +684,40 @@ def main():
     distill_loss = None
     privacy_report = {"enabled": False}
     method_name = args.method if ablation == "none" else f"{args.method}_{ablation}"
+    mmd_final = None
 
     # ── SMOTE / regression noise baseline (no diffusion training) ──
     if args.method == "smote":
-        syn_df = generate_smote_synthetic(
-            X_train,
-            y_train,
-            target_col=target_col,
-            n_synthetic=cfg["distillation"]["num_synthetic"],
-            random_state=cfg["project"]["seed"],
-            task=task,
-        )
+        with tracker.timed("sampling"):
+            syn_df = generate_smote_synthetic(
+                X_train,
+                y_train,
+                target_col=target_col,
+                n_synthetic=cfg["distillation"]["num_synthetic"],
+                random_state=cfg["project"]["seed"],
+                task=task,
+            )
         syn_labels = syn_df[target_col].values
-        evaluate_and_plot(
-            cfg,
-            dataset_name,
-            method_name,
-            preprocessor,
-            X_train,
-            X_test,
-            y_train,
-            y_test,
-            syn_df.drop(columns=[target_col]),
-            syn_labels,
-            target_col,
-            out_dir,
-            privacy_report=privacy_report,
-            extra_meta={"ablation": ablation, "task": task},
-            task=task,
-        )
+        with tracker.timed("evaluation"):
+            evaluate_and_plot(
+                cfg,
+                dataset_name,
+                method_name,
+                preprocessor,
+                X_train,
+                X_test,
+                y_train,
+                y_test,
+                syn_df.drop(columns=[target_col]),
+                syn_labels,
+                target_col,
+                out_dir,
+                privacy_report=privacy_report,
+                extra_meta={"ablation": ablation, "task": task},
+                task=task,
+                run_id=run_tag,
+                runtime_info=tracker.as_dict(),
+            )
         return
 
     # ── Train or load diffusion ──
@@ -616,22 +746,24 @@ def main():
             train_loss = final.get("loss_history")
         print(f"Loaded checkpoint: {ckpt_path}")
     else:
-        diffusion, train_loss, privacy_report, _ = train_diffusion(
-            cfg=cfg,
-            info=info,
-            X_train_t=X_train_t,
-            y_train_t=y_train_t,
-            device=device,
-            epochs=epochs,
-            batch_size=batch_size,
-            lr=lr,
-            mask_ratio=args.mask_ratio,
-            ablation=ablation,
-            privacy_enabled=privacy_enabled,
-            epsilon=epsilon,
-            save_dir=out_dir,
-            dataset_name=dataset_name,
-        )
+        with tracker.timed("training"):
+            diffusion, train_loss, privacy_report, _ = train_diffusion(
+                cfg=cfg,
+                info=info,
+                X_train_t=X_train_t,
+                y_train_t=y_train_t,
+                device=device,
+                epochs=epochs,
+                batch_size=batch_size,
+                lr=lr,
+                mask_ratio=args.mask_ratio,
+                ablation=ablation,
+                privacy_enabled=privacy_enabled,
+                epsilon=epsilon,
+                save_dir=out_dir,
+                dataset_name=dataset_name,
+            )
+        tracker.number_of_trainable_parameters = count_parameters(diffusion)
 
     diffusion.eval()
 
@@ -645,32 +777,35 @@ def main():
                 for c in range(info.num_classes)
             ]
         )[:n].to(device)
-        with torch.no_grad():
-            generated = diffusion.sample(
-                labels=gen_labels,
-                shape=(len(gen_labels), info.total_dim),
-                device=device,
-                sampling_steps=cfg["diffusion"].get("sampling_steps", 20),
-            )
+        with tracker.timed("sampling"):
+            with torch.no_grad():
+                generated = diffusion.sample(
+                    labels=gen_labels,
+                    shape=(len(gen_labels), info.total_dim),
+                    device=device,
+                    sampling_steps=cfg["diffusion"].get("sampling_steps", 20),
+                )
         syn_df = preprocessor.inverse_transform(generated)
         syn_labels = preprocessor.inverse_transform_labels(gen_labels.cpu())
     else:
         # Default: distillation
         raw_space = ablation == "raw_space"
-        syn_out, syn_labels, distill_loss = run_distillation(
-            cfg,
-            diffusion,
-            X_train_t,
-            y_train_t,
-            device,
-            info,
-            raw_space=raw_space,
-            X_train_df=X_train,
-            y_train_raw=y_train,
-        )
+        with tracker.timed("distillation"):
+            syn_out, syn_labels, distill_loss = run_distillation(
+                cfg,
+                diffusion,
+                X_train_t,
+                y_train_t,
+                device,
+                info,
+                raw_space=raw_space,
+                X_train_df=X_train,
+                y_train_raw=y_train,
+            )
+        if distill_loss:
+            mmd_final = float(distill_loss[-1])
         if raw_space:
             syn_df = syn_out
-            # syn_labels already original-space names
         else:
             syn_df = preprocessor.inverse_transform(syn_out)
             syn_labels = preprocessor.inverse_transform_labels(syn_labels.cpu())
@@ -680,32 +815,36 @@ def main():
             save_payload["syn_data"] = syn_out.detach().cpu()
         torch.save(save_payload, out_dir / f"distilled_{dataset_name}.pt")
 
-    evaluate_and_plot(
-        cfg,
-        dataset_name,
-        method_name,
-        preprocessor,
-        X_train,
-        X_test,
-        y_train,
-        y_test,
-        syn_df,
-        syn_labels,
-        target_col,
-        out_dir,
-        train_loss=train_loss,
-        distill_loss=distill_loss,
-        privacy_report=privacy_report,
-        extra_meta={
-            "ablation": ablation,
-            "epochs": epochs,
-            "privacy_enabled": privacy_enabled,
-            "epsilon_target": epsilon if privacy_enabled else None,
-            "numerical_transform": numerical_transform,
-            "task": task,
-        },
-        task=task,
-    )
+    with tracker.timed("evaluation"):
+        evaluate_and_plot(
+            cfg,
+            dataset_name,
+            method_name,
+            preprocessor,
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            syn_df,
+            syn_labels,
+            target_col,
+            out_dir,
+            train_loss=train_loss,
+            distill_loss=distill_loss,
+            privacy_report=privacy_report,
+            extra_meta={
+                "ablation": ablation,
+                "epochs": epochs,
+                "privacy_enabled": privacy_enabled,
+                "epsilon_target": epsilon if privacy_enabled else None,
+                "numerical_transform": numerical_transform,
+                "task": task,
+            },
+            task=task,
+            run_id=run_tag,
+            runtime_info=tracker.as_dict(),
+            mmd_final=mmd_final,
+        )
 
 
 if __name__ == "__main__":

@@ -14,3 +14,6 @@ requests>=2.31
 tqdm>=4.65
 imbalanced-learn>=0.11
 scipy>=1.10
+psutil>=5.9
+openpyxl>=3.1
+pytest>=7.0

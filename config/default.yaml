@@ -145,17 +145,45 @@ experiments:
     - "california_housing"
     - "king_county"
   privacy_epsilon_grid:
+    - 0.5
     - 1.0
+    - 2.0
     - 4.0
     - 8.0
+    - 16.0
     - 100.0
+  seeds:
+    - 42
+    - 52
+    - 62
+    - 72
+    - 82
   ablations:
-    - "mlp_denoiser"
-    - "no_attention"
-    - "minmax"
-    - "raw_space"
+    # Implemented CLI variants (--ablation):
+    - "mlp_denoiser"   # no_transformer_or_mlp_denoiser alias
+    - "no_attention"   # no_conditioning_attention
+    - "minmax"         # no_gaussian_quantile
+    - "raw_space"      # raw_space_optimization
+    # Not simulated as separate toggles (see batch runner docs):
+    # - no_dynamic_masking
+    # - no_dp_sgd (use non-private / noprivacy runs)
+    # - no_fast_sampler
   baselines:
     - "smote"
+    # Registered but unavailable without external packages (no fabricated results):
+    # - tvae
+    # - ctab_gan_plus
+    # - tabddpm
+    # - mtabgen
+
+reporting:
+  primary_dataset: "diabetes"
+  representative_datasets:
+    - "diabetes"
+    - "adult"
+    - "california_housing"
+    - "covertype"
+  figure_dpi: 300
 
 api:
   host: "0.0.0.0"

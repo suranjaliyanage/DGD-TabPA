@@ -1,7 +1,7 @@
 """
 Figure generation for DGD-TabPA experiments.
 
-Produces thesis-ready PNGs: loss curves, marginals, categorical bars,
+Produces evaluation PNGs: loss curves, marginals, categorical bars,
 correlation heatmaps, PCA/t-SNE, ROC curves, DCR histograms, privacy–utility.
 """
 
@@ -50,7 +50,7 @@ def plot_loss_curve(
     if label:
         ax.legend()
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -70,7 +70,7 @@ def plot_loss_comparison(
     ax.set_title(title)
     ax.legend()
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -114,7 +114,7 @@ def plot_marginal_distributions(
         axes[1, i].set_title(f"{col} (Synthetic)")
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -165,7 +165,7 @@ def plot_categorical_frequencies(
         ax.legend(fontsize=8)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -209,7 +209,7 @@ def plot_correlation_heatmaps(
         ax.tick_params(labelsize=7)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -287,7 +287,7 @@ def plot_manifold(
         ax.legend(markerscale=1.5, fontsize=8)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -314,7 +314,7 @@ def plot_roc_curves(
     ax.set_title(title)
     ax.legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -323,24 +323,132 @@ def plot_dcr_histogram(
     dcr_values: list,
     out_path: Path,
     title: str = "Distance to Closest Record (DCR)",
+    exact_copy_count: int = None,
 ):
     if not dcr_values:
         return None
     sns.set_theme(style="whitegrid")
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(dcr_values, bins=40, color="teal", alpha=0.8, edgecolor="white")
-    ax.axvline(
-        np.median(dcr_values),
-        color="crimson",
-        linestyle="--",
-        label=f"Median={np.median(dcr_values):.3f}",
+    vals = np.asarray(dcr_values, dtype=float)
+    ax.hist(vals, bins=40, color="teal", alpha=0.8, edgecolor="white")
+    med = float(np.median(vals))
+    p5 = float(np.percentile(vals, 5))
+    ax.axvline(med, color="crimson", linestyle="--", label=f"Median={med:.3f}")
+    ax.axvline(p5, color="darkorange", linestyle=":", label=f"5th pct={p5:.3f}")
+    n_exact = (
+        int(exact_copy_count)
+        if exact_copy_count is not None
+        else int((vals == 0.0).sum())
     )
     ax.set_xlabel("Euclidean DCR")
     ax.set_ylabel("Count")
     ax.set_title(title)
+    ax.legend(title=f"Exact copies={n_exact}")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+    return out_path
+
+
+def plot_pr_curves(pr_curves: dict, out_path: Path, title: str = "TSTR Precision-Recall"):
+    if not pr_curves:
+        return None
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for name, curve in pr_curves.items():
+        ax.plot(
+            curve["recall"],
+            curve["precision"],
+            linewidth=1.8,
+            label=f"{name} (AP={curve.get('ap', float('nan')):.3f})",
+        )
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+    return out_path
+
+
+def plot_class_distribution(
+    y_real,
+    y_syn,
+    out_path: Path,
+    title: str = "Class / target distribution",
+):
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    real_c = pd.Series(y_real).astype(str).value_counts(normalize=True)
+    syn_c = pd.Series(y_syn).astype(str).value_counts(normalize=True)
+    cats = list(dict.fromkeys(list(real_c.index) + list(syn_c.index)))[:15]
+    x = np.arange(len(cats))
+    w = 0.35
+    ax.bar(x - w / 2, [real_c.get(c, 0) for c in cats], w, label="Real", color="steelblue")
+    ax.bar(x + w / 2, [syn_c.get(c, 0) for c in cats], w, label="Synthetic", color="coral")
+    ax.set_xticks(x)
+    ax.set_xticklabels(cats, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Frequency")
+    ax.set_title(title)
     ax.legend()
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+    return out_path
+
+
+def plot_residuals(
+    y_true,
+    y_pred,
+    out_path: Path,
+    title: str = "TSTR Residuals",
+):
+    import matplotlib.pyplot as plt
+
+    resid = np.asarray(y_true, dtype=float) - np.asarray(y_pred, dtype=float)
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.scatter(y_pred, resid, s=12, alpha=0.6, color="teal")
+    ax.axhline(0, color="crimson", linestyle="--")
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Residual (true - pred)")
+    ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+    return out_path
+
+
+def plot_confusion_matrix(
+    y_true,
+    y_pred,
+    out_path: Path,
+    title: str = "TSTR Confusion Matrix",
+):
+    """Save a normalised confusion matrix heatmap."""
+    from sklearn.metrics import confusion_matrix
+
+    import matplotlib.pyplot as plt
+
+    yt = np.asarray(y_true)
+    yp = np.asarray(y_pred)
+    labels = sorted(set(yt.tolist()) | set(yp.tolist()))
+    cm = confusion_matrix(yt, yp, labels=labels, normalize="true")
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    im = ax.imshow(cm, cmap="Blues", vmin=0, vmax=1)
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
+    ax.set_title(title)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -348,7 +456,7 @@ def plot_dcr_histogram(
 def plot_privacy_utility(
     points: list,
     out_path: Path,
-    title: str = "Privacy–Utility Trade-off",
+    title: str = "Privacy-Utility Trade-off",
 ):
     """
     points: list of dicts with keys epsilon, tstr_f1, dcr_median, label (optional)
@@ -362,14 +470,14 @@ def plot_privacy_utility(
     eps = [p["epsilon"] for p in points]
     f1 = [p["tstr_f1"] for p in points]
     dcr = [p.get("dcr_median") for p in points]
-    labels = [p.get("label", f"ε={e}") for p, e in zip(points, eps)]
+    labels = [p.get("label", f"eps={e}") for p, e in zip(points, eps)]
 
     axes[0].plot(eps, f1, "o-", color="steelblue", linewidth=1.8)
     for x, y, lab in zip(eps, f1, labels):
         axes[0].annotate(lab, (x, y), textcoords="offset points", xytext=(4, 4), fontsize=7)
-    axes[0].set_xlabel("Privacy budget ε")
+    axes[0].set_xlabel("Privacy budget eps")
     axes[0].set_ylabel("Mean TSTR F1")
-    axes[0].set_title("Utility vs ε")
+    axes[0].set_title("Utility vs eps")
 
     axes[1].plot(eps, dcr, "s-", color="teal", linewidth=1.8)
     axes[1].set_xlabel("Privacy budget ε")
@@ -377,7 +485,7 @@ def plot_privacy_utility(
     axes[1].set_title("Privacy (DCR) vs ε")
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return out_path
 
@@ -398,36 +506,45 @@ def generate_all_figures(
     syn_y: np.ndarray = None,
     real_X_num: np.ndarray = None,
     syn_X_num: np.ndarray = None,
+    method: str = "dgd_tabpa",
+    pr_curves: dict = None,
+    confusion_data: dict = None,
+    residual_data: dict = None,
+    exact_copy_count: int = None,
+    task: str = "classification",
 ) -> dict:
     """Generate the full evaluation figure set for one experiment run."""
     fig_dir = _ensure_dir(Path(out_dir) / "figures")
     paths = {}
+    tag = f"{dataset}_{method}"
 
     if train_loss:
         paths["train_loss"] = str(
             plot_loss_curve(
                 train_loss,
-                fig_dir / f"train_loss_{dataset}.png",
-                title=f"Diffusion Training Loss ({dataset})",
+                fig_dir / f"training_loss_{tag}.png",
+                title=f"Diffusion Training Loss ({dataset}, {method})",
             )
         )
     if distill_loss:
         paths["distill_loss"] = str(
             plot_loss_curve(
                 distill_loss,
-                fig_dir / f"distill_loss_{dataset}.png",
-                title=f"Distillation MMD Loss ({dataset})",
+                fig_dir / f"distillation_loss_{tag}.png",
+                title=f"Distillation MMD Loss ({dataset}, {method})",
                 ylabel="MMD Loss",
             )
         )
 
-    if num_features:
+    # Choose 3–6 representative numerical features
+    num_sel = list(num_features or [])[:6]
+    if num_sel:
         p = plot_marginal_distributions(
             real_train,
             syn_df,
-            num_features,
-            fig_dir / f"marginals_{dataset}.png",
-            title=f"Marginal Distributions ({dataset})",
+            num_sel,
+            fig_dir / f"marginals_{tag}.png",
+            title=f"Marginal Distributions ({dataset}, {method})",
         )
         if p:
             paths["marginals"] = str(p)
@@ -436,9 +553,9 @@ def generate_all_figures(
         p = plot_categorical_frequencies(
             real_train,
             syn_df,
-            cat_features,
-            fig_dir / f"categorical_{dataset}.png",
-            title=f"Categorical Frequencies ({dataset})",
+            list(cat_features)[:4],
+            fig_dir / f"categorical_{tag}.png",
+            title=f"Categorical Frequencies ({dataset}, {method})",
         )
         if p:
             paths["categorical"] = str(p)
@@ -448,8 +565,8 @@ def generate_all_figures(
             real_train,
             syn_df,
             num_features[:12],
-            fig_dir / f"correlation_{dataset}.png",
-            title=f"Correlation Heatmaps ({dataset})",
+            fig_dir / f"correlation_{tag}.png",
+            title=f"Correlation Heatmaps ({dataset}, {method})",
         )
         if p:
             paths["correlation"] = str(p)
@@ -460,28 +577,72 @@ def generate_all_figures(
             syn_X_num,
             real_y if real_y is not None else np.zeros(len(real_X_num)),
             syn_y if syn_y is not None else np.zeros(len(syn_X_num)),
-            fig_dir / f"manifold_{dataset}.png",
-            title=f"PCA / t-SNE Manifold Alignment ({dataset})",
+            fig_dir / f"manifold_{tag}.png",
+            title=f"PCA / t-SNE Manifold Alignment ({dataset}, {method})",
         )
         if p:
             paths["manifold"] = str(p)
 
-    if roc_curves:
+    if roc_curves and task == "classification":
         p = plot_roc_curves(
             roc_curves,
-            fig_dir / f"roc_{dataset}.png",
-            title=f"TSTR ROC Curves ({dataset})",
+            fig_dir / f"roc_{tag}.png",
+            title=f"TSTR ROC Curves ({dataset}, {method})",
         )
         if p:
             paths["roc"] = str(p)
 
+    if pr_curves and task == "classification":
+        p = plot_pr_curves(
+            pr_curves,
+            fig_dir / f"pr_curve_{tag}.png",
+            title=f"TSTR PR Curves ({dataset}, {method})",
+        )
+        if p:
+            paths["pr_curve"] = str(p)
+
+    if confusion_data and task == "classification":
+        for model_name, data in confusion_data.items():
+            p = plot_confusion_matrix(
+                data["y_true"],
+                data["y_pred"],
+                fig_dir / f"confusion_matrix_{dataset}_{model_name}_{method}.png",
+                title=f"TSTR Confusion ({dataset}, {model_name}, {method})",
+            )
+            if p:
+                paths[f"confusion_{model_name}"] = str(p)
+
+    if residual_data and task == "regression":
+        p = plot_residuals(
+            residual_data["y_true"],
+            residual_data["y_pred"],
+            fig_dir / f"residuals_{tag}.png",
+            title=f"TSTR Residuals ({dataset}, {method})",
+        )
+        if p:
+            paths["residuals"] = str(p)
+
     if dcr_values:
         p = plot_dcr_histogram(
             dcr_values,
-            fig_dir / f"dcr_{dataset}.png",
-            title=f"DCR Distribution ({dataset})",
+            fig_dir / f"dcr_{tag}.png",
+            title=f"DCR Distribution ({dataset}, {method})",
+            exact_copy_count=exact_copy_count,
         )
         if p:
             paths["dcr"] = str(p)
+
+    if real_y is not None and syn_y is not None:
+        try:
+            p = plot_class_distribution(
+                real_y,
+                syn_y,
+                fig_dir / f"class_distribution_{tag}.png",
+                title=f"Class/target distribution ({dataset}, {method})",
+            )
+            if p:
+                paths["class_distribution"] = str(p)
+        except Exception:
+            pass
 
     return paths

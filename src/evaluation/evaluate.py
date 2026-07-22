@@ -21,12 +21,17 @@ from scipy.spatial.distance import cdist, jensenshannon
 from scipy.stats import ks_2samp, wasserstein_distance
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
+    balanced_accuracy_score,
     f1_score,
     mean_absolute_error,
     mean_squared_error,
+    precision_score,
     r2_score,
+    recall_score,
     roc_auc_score,
     roc_curve,
+    precision_recall_curve,
 )
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 
@@ -122,7 +127,17 @@ class Evaluator:
             if wasserstein_scores
             else None
         )
+        results["wasserstein_std"] = (
+            float(np.std(list(wasserstein_scores.values())))
+            if wasserstein_scores
+            else None
+        )
         results["ks_test_per_column"] = ks_scores
+        results["ks_mean"] = (
+            float(np.mean([v["statistic"] for v in ks_scores.values()]))
+            if ks_scores
+            else None
+        )
 
         # Pairwise Correlation Difference (PCD)
         if len(common_num) > 1:
@@ -133,11 +148,15 @@ class Evaluator:
             syn_corr = np.nan_to_num(syn_corr, nan=0.0)
             pcd = np.abs(real_corr - syn_corr).mean()
             results["pcd"] = float(pcd)
+            results["correlation_frobenius_norm"] = float(
+                np.linalg.norm(real_corr - syn_corr, ord="fro")
+            )
             results["real_corr"] = real_corr.tolist()
             results["syn_corr"] = syn_corr.tolist()
             results["corr_columns"] = list(common_num)
         else:
             results["pcd"] = None
+            results["correlation_frobenius_norm"] = None
 
         # Jensen–Shannon Distance for categorical columns
         if cat_cols is None:
@@ -177,6 +196,9 @@ class Evaluator:
         results["jsd_per_column"] = jsd_scores
         results["jsd_mean"] = (
             float(np.mean(list(jsd_scores.values()))) if jsd_scores else None
+        )
+        results["jsd_std"] = (
+            float(np.std(list(jsd_scores.values()))) if jsd_scores else None
         )
 
         return results
@@ -341,6 +363,32 @@ class Evaluator:
                     "tstr_accuracy": tstr_acc,
                     "tstr_auc": tstr_auc,
                     "f1_gap": round(trtr_f1 - tstr_f1, 4),
+                    "tstr_balanced_accuracy": float(
+                        balanced_accuracy_score(y_real_test, y_pred_tstr)
+                    ),
+                    "tstr_precision_macro": float(
+                        precision_score(
+                            y_real_test, y_pred_tstr, average="macro", zero_division=0
+                        )
+                    ),
+                    "tstr_recall_macro": float(
+                        recall_score(
+                            y_real_test, y_pred_tstr, average="macro", zero_division=0
+                        )
+                    ),
+                    "tstr_f1_macro": float(
+                        f1_score(y_real_test, y_pred_tstr, average="macro")
+                    ),
+                    "tstr_pr_auc": _safe_pr_auc(
+                        model_tstr, X_real_test, y_real_test, n_classes
+                    ),
+                }
+
+                if not hasattr(self, "_confusion_data"):
+                    self._confusion_data = {}
+                self._confusion_data[name] = {
+                    "y_true": np.asarray(y_real_test).tolist(),
+                    "y_pred": np.asarray(y_pred_tstr).tolist(),
                 }
 
                 # Store ROC for binary TSTR
@@ -353,8 +401,41 @@ class Evaluator:
                             "tpr": tpr.tolist(),
                             "auc": tstr_auc,
                         }
+                        prec, rec, _ = precision_recall_curve(y_real_test, proba[:, 1])
+                        if not hasattr(self, "_pr_curves"):
+                            self._pr_curves = {}
+                        self._pr_curves[name] = {
+                            "precision": prec.tolist(),
+                            "recall": rec.tolist(),
+                            "ap": results[name]["tstr_pr_auc"],
+                        }
             except Exception as e:
                 results[name] = {"error": str(e)}
+
+        # Aggregate convenience fields across models
+        f1s = [
+            m["tstr_f1"]
+            for m in results.values()
+            if isinstance(m, dict) and "tstr_f1" in m
+        ]
+        if f1s:
+            # Prefer xgboost for single headline metrics when present
+            prefer = results.get("xgboost") or next(
+                (m for m in results.values() if isinstance(m, dict) and "tstr_f1" in m),
+                {},
+            )
+            results["_aggregates"] = {
+                "accuracy": prefer.get("tstr_accuracy"),
+                "balanced_accuracy": prefer.get("tstr_balanced_accuracy"),
+                "precision_macro": prefer.get("tstr_precision_macro"),
+                "recall_macro": prefer.get("tstr_recall_macro"),
+                "f1_macro": prefer.get("tstr_f1_macro"),
+                "f1_weighted": prefer.get("tstr_f1"),
+                "roc_auc": prefer.get("tstr_auc"),
+                "pr_auc": prefer.get("tstr_pr_auc"),
+                "trtr_f1": prefer.get("trtr_f1"),
+                "trtr_auc": prefer.get("trtr_auc"),
+            }
 
         results["_meta"] = {
             "n_features_used": len(used_features),
@@ -468,6 +549,12 @@ class Evaluator:
                         mean_squared_error(y_real_test, pred_tstr) ** 0.5
                     ),
                 }
+                if name == "xgboost" or not getattr(self, "_residual_data", None):
+                    self._residual_data = {
+                        "y_true": np.asarray(y_real_test).tolist(),
+                        "y_pred": np.asarray(pred_tstr).tolist(),
+                        "model": name,
+                    }
             except Exception as e:
                 results[name] = {"error": str(e)}
 
@@ -512,6 +599,8 @@ class Evaluator:
             "dcr_min": float(np.min(dcr_values)),
             "dcr_5th_percentile": float(np.percentile(dcr_values, 5)),
             "n_exact_copies": n_exact_copies,
+            "exact_copy_count": n_exact_copies,
+            "exact_copy_rate": float(n_exact_copies / max(len(dcr_values), 1)),
             "sanity_check_passed": n_exact_copies == 0,
             "dcr_values": dcr_values.tolist(),
         }
@@ -557,14 +646,27 @@ class Evaluator:
                 results["mia_near_random"] = (
                     bool(abs(mia_auc - 0.5) < 0.05) if mia_auc is not None else None
                 )
+                # Threshold accuracy at score median
+                thr = float(np.median(scores))
+                pred = (scores >= thr).astype(int)
+                results["mia_accuracy"] = float((pred == labels_mia).mean())
 
         return results
 
     def get_roc_curves(self) -> dict:
         return self._roc_curves
 
+    def get_pr_curves(self) -> dict:
+        return getattr(self, "_pr_curves", {})
+
+    def get_confusion_data(self) -> dict:
+        return getattr(self, "_confusion_data", {})
+
+    def get_residual_data(self) -> Optional[dict]:
+        return getattr(self, "_residual_data", None)
+
     def summary_row(self, dataset: str, method: str = "dgd_tabpa") -> dict:
-        """Flat row suitable for CSV/thesis tables."""
+        """Flat row suitable for CSV / summary tables."""
         res = self.results.get("resemblance", {})
         util = self.results.get("utility", {})
         priv = self.results.get("privacy", {})
@@ -745,6 +847,18 @@ def _align_labels(y_train, y_test, y_syn):
         codes[n_tr : n_tr + n_te].astype(np.int64),
         codes[n_tr + n_te :].astype(np.int64),
     )
+
+
+def _safe_pr_auc(model, X, y, n_classes) -> Optional[float]:
+    try:
+        if not hasattr(model, "predict_proba") or n_classes != 2:
+            return None
+        proba = model.predict_proba(X)
+        if proba.ndim == 2 and proba.shape[1] == 2:
+            return float(average_precision_score(y, proba[:, 1]))
+        return float(average_precision_score(y, proba))
+    except Exception:
+        return None
 
 
 def _safe_auc(model, X, y, n_classes) -> Optional[float]:
