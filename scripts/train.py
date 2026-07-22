@@ -71,8 +71,16 @@ def main():
     data_path = Path(cfg["data"]["data_dir"]) / f"{dataset_name}.csv"
 
     if not data_path.exists():
-        print(f"Dataset not found at {data_path}. Run: python scripts/download_data.py")
+        print(f"Dataset not found at {data_path}. Run: python scripts/download_data.py --dataset {dataset_name}")
         sys.exit(1)
+
+    if dataset_cfg.get("task") == "regression":
+        print(
+            f"WARNING: '{dataset_name}' is a regression benchmark. "
+            "The current diffusion / distillation loop uses discrete label embeddings. "
+            "Proceeding will LabelEncode the continuous target (many 'classes'). "
+            "Prefer classification datasets for full pipeline runs."
+        )
 
     preprocessor = TabularPreprocessor(random_state=cfg["project"]["seed"])
     X_train, X_test, y_train, y_test = preprocessor.load_dataset(

@@ -72,9 +72,22 @@ class TabularPreprocessor:
         y = df[target_col].values
         X = df[num_features + cat_features]
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=self.random_state, stratify=y
-        )
+        # Stratify when class labels are discrete and each class has enough samples.
+        # Continuous / high-cardinality targets (regression) fall back to a plain split.
+        n_unique = len(np.unique(y))
+        can_stratify = n_unique > 1 and n_unique <= 100
+        if can_stratify:
+            _, counts = np.unique(y, return_counts=True)
+            can_stratify = counts.min() >= 2
+
+        if can_stratify:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=self.random_state, stratify=y
+            )
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=self.random_state
+            )
 
         self.info = DatasetInfo(
             name=name,

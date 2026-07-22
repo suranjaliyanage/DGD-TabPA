@@ -7,16 +7,59 @@ data:
   data_dir: "data/raw"
   test_size: 0.2
   datasets:
+    # --- 1. Generic Industrial Benchmarks ---
     adult:
-      name: "Adult Income"
-      url: "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
+      name: "Adult Income (Census Income)"
+      source: "https://doi.org/10.24432/C5XW20"
       target: "income"
       task: "classification"
+    churn:
+      name: "Churn Modelling"
+      source: "https://www.kaggle.com/datasets/shrutimechlearn/churn-modelling"
+      target: "Exited"
+      task: "classification"
+    credit:
+      name: "Default of Credit Card Clients"
+      source: "https://www.kaggle.com/uciml/default-of-credit-card-clients-dataset"
+      target: "default"
+      task: "classification"
+    covertype:
+      name: "Forest Cover Type (Covertype)"
+      source: "https://doi.org/10.24432/C50K5N"
+      target: "Cover_Type"
+      task: "classification"
+    # --- 2. Specialized Medical Benchmarks ---
+    cvd:
+      name: "Cardiovascular Disease (CVD)"
+      source: "https://www.kaggle.com/sulianova/cardiovascular-disease-dataset"
+      target: "cardio"
+      task: "classification"
+    hcv:
+      name: "Hepatitis C Virus (HCV) for Egyptian Patients"
+      source: "https://archive.ics.uci.edu/dataset/503"
+      target: "histological_staging"
+      task: "classification"
     ilpd:
-      name: "Indian Liver Patient"
-      url: "https://archive.ics.uci.edu/ml/machine-learning-databases/00225/Indian%20Liver%20Patient%20Dataset%20(ILPD).csv"
+      name: "Indian Liver Patient (ILP)"
+      source: "https://archive.ics.uci.edu/ml/datasets/ILPD+(Indian+Liver+Patient+Dataset)"
       target: "is_patient"
       task: "classification"
+    diabetes:
+      name: "Pima Indians Diabetes"
+      source: "https://kaggle.com/uciml/pima-indians-diabetes-database"
+      target: "Outcome"
+      task: "classification"
+    # --- 3. Regression Benchmarks ---
+    california_housing:
+      name: "California Housing"
+      source: "https://www.kaggle.com/camnugent/california-housing-prices"
+      target: "MedHouseVal"
+      task: "regression"
+    king_county:
+      name: "House Sales in King County"
+      source: "https://www.kaggle.com/datasets/harlfoxem/housesalesprediction"
+      target: "price"
+      task: "regression"
 
 preprocessing:
   numerical_transform: "quantile_normal"
