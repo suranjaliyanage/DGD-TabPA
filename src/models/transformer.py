@@ -124,10 +124,13 @@ class TabularTransformerDenoiser(nn.Module):
         n_decoder_layers: int = 3,
         d_ff: int = 512,
         dropout: float = 0.1,
+        use_conditioning_attention: bool = True,
     ):
         super().__init__()
         self.total_dim = total_dim
         self.d_model = d_model
+        # Ablation: when False, use additive context instead of cross-attention
+        self.use_conditioning_attention = use_conditioning_attention
 
         # Embeddings
         self.col_embedding = ColumnEmbedding(total_dim, d_model)
@@ -158,6 +161,8 @@ class TabularTransformerDenoiser(nn.Module):
         ])
 
         self.norm_out = nn.LayerNorm(d_model)
+        # Additive fusion path for attention ablation
+        self.additive_proj = nn.Linear(d_model, d_model)
 
     def create_dynamic_mask(
         self,
@@ -276,10 +281,14 @@ class TabularTransformerDenoiser(nn.Module):
             src_key_padding_mask=cond_pad_mask,
         )  # (batch, max_cond+1, d_model)
 
-        # Decoder: refine masked features via conditioning attention
-        dec_out = masked_tokens
-        for block in self.decoder_blocks:
-            dec_out = block(dec_out, enc_out)
+        # Decoder: refine masked features via conditioning attention (or additive ablation)
+        if self.use_conditioning_attention:
+            dec_out = masked_tokens
+            for block in self.decoder_blocks:
+                dec_out = block(dec_out, enc_out)
+        else:
+            ctx = self.additive_proj(enc_out[:, 0:1, :])
+            dec_out = masked_tokens + ctx
 
         dec_out = self.norm_out(dec_out)
 
@@ -317,10 +326,14 @@ class TabularTransformerDenoiser(nn.Module):
         # Encoder with only context token
         enc_out = self.encoder(context)  # (batch, 1, d_model)
 
-        # Decoder: all features are queries
-        dec_out = noisy_emb
-        for block in self.decoder_blocks:
-            dec_out = block(dec_out, enc_out)
+        if self.use_conditioning_attention:
+            dec_out = noisy_emb
+            for block in self.decoder_blocks:
+                dec_out = block(dec_out, enc_out)
+        else:
+            # Ablation: additive timestep/label context (no cross-attention)
+            ctx = self.additive_proj(enc_out)
+            dec_out = noisy_emb + ctx
 
         dec_out = self.norm_out(dec_out)
 

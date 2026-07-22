@@ -9,7 +9,12 @@ and One-Hot Encoding to categorical features.
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import QuantileTransformer, OneHotEncoder, LabelEncoder
+from sklearn.preprocessing import (
+    QuantileTransformer,
+    MinMaxScaler,
+    OneHotEncoder,
+    LabelEncoder,
+)
 from sklearn.model_selection import train_test_split
 from dataclasses import dataclass, field
 from typing import Optional
@@ -40,10 +45,21 @@ class TabularPreprocessor:
     Target column -> LabelEncoder
     """
 
-    def __init__(self, n_quantiles: int = 1000, random_state: int = 42):
+    def __init__(
+        self,
+        n_quantiles: int = 1000,
+        random_state: int = 42,
+        numerical_transform: str = "quantile_normal",
+    ):
+        """
+        Args:
+            numerical_transform: "quantile_normal" (default) or "minmax"
+                (ablation: Role of Gaussian Quantile Preprocessing).
+        """
         self.n_quantiles = n_quantiles
         self.random_state = random_state
-        self.num_transformer: Optional[QuantileTransformer] = None
+        self.numerical_transform = numerical_transform
+        self.num_transformer = None
         self.cat_encoder: Optional[OneHotEncoder] = None
         self.label_encoder: Optional[LabelEncoder] = None
         self.info: Optional[DatasetInfo] = None
@@ -109,11 +125,14 @@ class TabularPreprocessor:
         cat_features = self.info.cat_features
 
         if num_features:
-            self.num_transformer = QuantileTransformer(
-                n_quantiles=min(self.n_quantiles, len(X_train)),
-                output_distribution="normal",
-                random_state=self.random_state,
-            )
+            if self.numerical_transform == "minmax":
+                self.num_transformer = MinMaxScaler(feature_range=(-1, 1))
+            else:
+                self.num_transformer = QuantileTransformer(
+                    n_quantiles=min(self.n_quantiles, len(X_train)),
+                    output_distribution="normal",
+                    random_state=self.random_state,
+                )
             self.num_transformer.fit(X_train[num_features].values)
 
         if cat_features:

@@ -62,7 +62,7 @@ data:
       task: "regression"
 
 preprocessing:
-  numerical_transform: "quantile_normal"
+  numerical_transform: "quantile_normal"  # or "minmax" for preprocessing ablation
   categorical_encoding: "onehot"
 
 model:
@@ -73,6 +73,10 @@ model:
   d_ff: 512
   dropout: 0.1
   activation: "gelu"
+  # Ablation: set false to disable Conditioning Attention
+  use_conditioning_attention: true
+  # Ablation: "transformer" (default) or "mlp"
+  denoiser: "transformer"
 
 diffusion:
   num_timesteps: 1000
@@ -98,6 +102,8 @@ distillation:
   inner_steps: 10
   surrogate: "mlp"
   matching: "distribution"
+  # Ablation: distill in transformed (latent) vs raw feature space
+  space: "latent"  # or "raw"
 
 privacy:
   enabled: false
@@ -114,9 +120,36 @@ evaluation:
   metrics:
     - "dcr"
     - "f1_score"
+    - "roc_auc"
     - "wasserstein"
     - "ks_test"
     - "pcd"
+    - "jsd"
+    - "mia"
+  output_dir: "outputs/experiments"
+
+experiments:
+  # Datasets used for quantitative evaluation tables
+  evaluation_datasets:
+    - "adult"
+    - "churn"
+    - "credit"
+    - "cvd"
+    - "hcv"
+    - "ilpd"
+    - "diabetes"
+  privacy_epsilon_grid:
+    - 1.0
+    - 4.0
+    - 8.0
+    - 100.0
+  ablations:
+    - "mlp_denoiser"
+    - "no_attention"
+    - "minmax"
+    - "raw_space"
+  baselines:
+    - "smote"
 
 api:
   host: "0.0.0.0"
